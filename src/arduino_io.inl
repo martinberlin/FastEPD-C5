@@ -381,30 +381,29 @@ int bbepI2CWrite(unsigned char iAddr, unsigned char *pData, int iLen)
 
 int bbepI2CRead(unsigned char iAddr, unsigned char *pData, int iLen)
 {
-int i = 0;
+    int i = 0;
+
     if (bBitBang) {
-    i = I2CRead(iAddr, pData, iLen);
+        i = I2CRead(iAddr, pData, iLen);
     } else {
 #ifdef ARDUINO
-    Wire.requestFrom(iAddr, (unsigned char)iLen);
-    while (i < iLen && Wire.available()) {
-        pData[i++] = Wire.read();
-    }
+        Wire.requestFrom(iAddr, (unsigned char)iLen);
+        while (i < iLen && Wire.available()) {
+            pData[i++] = Wire.read();
+        }
 #else
-    esp_err_t ret;
-    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-    if (cmd == NULL) {
-       // ESP_LOGE("epdiy", "insufficient memory for I2C transaction");
-    }
-    i2c_master_dev_handle_t dev = bbep_get_or_add_dev((uint8_t)iAddr, 400000);
-    if (!dev) return 0;
+        // ESP-IDF (new I2C master driver: driver/i2c_master.h)
+        i2c_master_dev_handle_t dev = bbep_get_or_add_dev((uint8_t)iAddr, 400000);
+        if (!dev) return 0;
 
-    esp_err_t err = i2c_master_receive(dev, pData, iLen, 1000 /*timeout_ms*/);
-    return (err == ESP_OK) ? iLen : 0;
+        esp_err_t err = i2c_master_receive(dev, pData, iLen, 1000 /*timeout_ms*/);
+        i = (err == ESP_OK) ? iLen : 0;
 #endif // ARDUINO
     } // !BitBang
+
     return i;
 }
+
 int bbepI2CReadRegister(unsigned char iAddr, unsigned char u8Register, unsigned char *pData, int iLen)
 {
     if (bBitBang) {
