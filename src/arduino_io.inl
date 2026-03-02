@@ -21,6 +21,82 @@
 #ifndef __BB_EP_IO__
 #define __BB_EP_IO__
 
+#if !defined(ARDUINO)
+  #include "driver/i2c_master.h"
+  #include "esp_err.h"
+  #include <string.h>
+#endif
+
+#if !defined(ARDUINO) && CONFIG_IDF_TARGET_ESP32C5
+
+static i2c_master_bus_handle_t s_i2c_bus = NULL;
+
+typedef struct {
+    uint8_t addr; // 7-bit
+    i2c_master_dev_handle_t dev;
+} bbep_i2c_dev_entry_t;
+
+// simple fixed-size cache; expand if needed
+static bbep_i2c_dev_entry_t s_devs[8];
+static int s_dev_count = 0;
+
+static i2c_master_dev_handle_t bbep_get_or_add_dev(uint8_t addr7, uint32_t speed_hz)
+{
+    // find existing
+    for (int i = 0; i < s_dev_count; i++) {
+        if (s_devs[i].addr == addr7) return s_devs[i].dev;
+    }
+
+    // add new
+    if (s_dev_count >= (int)(sizeof(s_devs)/sizeof(s_devs[0]))) {
+        return NULL; // cache full
+    }
+
+    i2c_device_config_t dev_cfg = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address = addr7,
+        .scl_speed_hz = speed_hz,
+    };
+
+    i2c_master_dev_handle_t dev_handle = NULL;
+    esp_err_t err = i2c_master_bus_add_device(s_i2c_bus, &dev_cfg, &dev_handle);
+    if (err != ESP_OK) return NULL;
+
+    s_devs[s_dev_count++] = (bbep_i2c_dev_entry_t){ .addr = addr7, .dev = dev_handle };
+    return dev_handle;
+}
+
+static esp_err_t bbep_i2c_bus_init(int sda, int scl)
+{
+    if (s_i2c_bus) {
+        // already init; optionally validate pins or recreate
+        return ESP_OK;
+    }
+
+    i2c_master_bus_config_t bus_cfg = {
+        .i2c_port = I2C_NUM_0,                  // 1) i2c_port
+        .sda_io_num = (gpio_num_t)sda,          // 2) sda_io_num
+        .scl_io_num = (gpio_num_t)scl,          // 3) scl_io_num
+        .clk_source = I2C_CLK_SRC_DEFAULT,
+        .glitch_ignore_cnt = 7,
+        .intr_priority = 0,
+        .trans_queue_depth = 0,
+        .flags = {                              // 8) flags
+            .enable_internal_pullup = 1,
+            .allow_pd = 0,
+        },
+    };
+
+    esp_err_t err = i2c_new_master_bus(&bus_cfg, &s_i2c_bus);
+    if (err != ESP_OK) return err;
+
+    s_dev_count = 0;
+    memset(s_devs, 0, sizeof(s_devs));
+    return ESP_OK;
+}
+
+#endif // !ARDUINO && CONFIG_IDF_TARGET_ESP32C5
+
 // Since the Espressif I2C driver seems to corrupt memory with it's frequent allocs and frees, use bit banging
 
 static uint8_t u8SDA_Pin, u8SCL_Pin;
@@ -273,17 +349,9 @@ int bbepI2CInit(uint8_t sda, uint8_t scl, int bb)
         Wire.setClock(400000);
         Wire.setTimeout(100);
 #else
-    i2c_config_t conf;
-    ESP_ERROR_CHECK(i2c_driver_delete());
-    conf.mode = I2C_MODE_MASTER;
-    conf.sda_io_num = sda;
-    conf.scl_io_num = scl;
-    conf.sda_pullup_en = GPIO_PULLUP_ENABLE;
-    conf.scl_pullup_en = GPIO_PULLUP_ENABLE;
-    conf.master.clk_speed = 400000;
-    conf.clk_flags = 0; 
-    ESP_ERROR_CHECK(i2c_param_config(I2C_NUM_0, &conf));
-    ESP_ERROR_CHECK(i2c_driver_install(I2C_NUM_0, I2C_MODE_MASTER, 0, 0, 0));
+    // init IDF I2C bus (new driver)
+    esp_err_t err = bbep_i2c_bus_init((int)sda, (int)scl);
+    return (err == ESP_OK) ? BBEP_SUCCESS : BBEP_I2C_ERROR; 
 #endif // ARDUINO
     } // !BitBang
     return BBEP_SUCCESS;
@@ -302,17 +370,11 @@ int bbepI2CWrite(unsigned char iAddr, unsigned char *pData, int iLen)
     rc = !Wire.endTransmission();
     return rc;
 #else
-    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-    if (cmd == NULL) {
-       // ESP_LOGE("bb_epdiy", "insufficient memory for I2C transaction");
-    }
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (iAddr << 1) | I2C_MASTER_WRITE, true);
-    i2c_master_write(cmd, pData, iLen, true);
-    i2c_master_stop(cmd);
-    esp_err_t ret = i2c_master_cmd_begin(I2C_NUM_0, cmd, 1000 / portTICK_PERIOD_MS);
-    i2c_cmd_link_delete(cmd);
-    return (ret == ESP_OK);
+    i2c_master_dev_handle_t dev = bbep_get_or_add_dev((uint8_t)iAddr, 400000);
+    if (!dev) return 0;
+
+    esp_err_t err = i2c_master_transmit(dev, pData, iLen, 1000 /*timeout_ms*/);
+    return (err == ESP_OK);
 #endif // ARDUINO
     } // !BitBang
 }
@@ -334,27 +396,28 @@ int i = 0;
     if (cmd == NULL) {
        // ESP_LOGE("epdiy", "insufficient memory for I2C transaction");
     }
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (iAddr << 1) | I2C_MASTER_READ, true);
-    if (iLen > 1) {
-        i2c_master_read(cmd, pData, iLen - 1, I2C_MASTER_ACK);
-    }
-    i2c_master_read_byte(cmd, pData + iLen - 1, I2C_MASTER_NACK);
-    i2c_master_stop(cmd);
+    i2c_master_dev_handle_t dev = bbep_get_or_add_dev((uint8_t)iAddr, 400000);
+    if (!dev) return 0;
 
-    ret = i2c_master_cmd_begin(I2C_NUM_0, cmd, 1000 / portTICK_PERIOD_MS);
-    if (ret == ESP_OK) {
-        i = iLen;
-    }
-    i2c_cmd_link_delete(cmd);
+    esp_err_t err = i2c_master_receive(dev, pData, iLen, 1000 /*timeout_ms*/);
+    return (err == ESP_OK) ? iLen : 0;
 #endif // ARDUINO
     } // !BitBang
     return i;
 }
 int bbepI2CReadRegister(unsigned char iAddr, unsigned char u8Register, unsigned char *pData, int iLen)
 {
-    bbepI2CWrite(iAddr, &u8Register, 1);
-    bbepI2CRead(iAddr, pData, iLen);
-    return iLen;
+    if (bBitBang) {
+        bbepI2CWrite(iAddr, &u8Register, 1);
+        bbepI2CRead(iAddr, pData, iLen);
+        return iLen;
+    }
+
+    i2c_master_dev_handle_t dev = bbep_get_or_add_dev((uint8_t)iAddr, 400000);
+    if (!dev) return 0;
+
+    // best practice in new driver: transmit + receive in one call
+    esp_err_t err = i2c_master_transmit_receive(dev, &u8Register, 1, pData, iLen, 1000);
+    return (err == ESP_OK) ? iLen : 0;
 }
 #endif // __BB_EP_IO__
