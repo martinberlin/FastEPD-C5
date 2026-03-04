@@ -22,6 +22,8 @@
 #define __BB_EP_IO__
 
 #if !defined(ARDUINO)
+  // NEW: use shared i2c bus
+  #include "i2c_bus.h"
   #include "driver/i2c_master.h"
   #include "esp_err.h"
   #include <string.h>
@@ -29,70 +31,16 @@
 
 #if !defined(ARDUINO) && CONFIG_IDF_TARGET_ESP32C5
 
-static i2c_master_bus_handle_t s_i2c_bus = NULL;
-
-typedef struct {
-    uint8_t addr; // 7-bit
-    i2c_master_dev_handle_t dev;
-} bbep_i2c_dev_entry_t;
-
-// simple fixed-size cache; expand if needed
-static bbep_i2c_dev_entry_t s_devs[8];
-static int s_dev_count = 0;
-
-static i2c_master_dev_handle_t bbep_get_or_add_dev(uint8_t addr7, uint32_t speed_hz)
-{
-    // find existing
-    for (int i = 0; i < s_dev_count; i++) {
-        if (s_devs[i].addr == addr7) return s_devs[i].dev;
-    }
-
-    // add new
-    if (s_dev_count >= (int)(sizeof(s_devs)/sizeof(s_devs[0]))) {
-        return NULL; // cache full
-    }
-
-    i2c_device_config_t dev_cfg = {
-        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-        .device_address = addr7,
-        .scl_speed_hz = speed_hz,
-    };
-
-    i2c_master_dev_handle_t dev_handle = NULL;
-    esp_err_t err = i2c_master_bus_add_device(s_i2c_bus, &dev_cfg, &dev_handle);
-    if (err != ESP_OK) return NULL;
-
-    s_devs[s_dev_count++] = (bbep_i2c_dev_entry_t){ .addr = addr7, .dev = dev_handle };
-    return dev_handle;
-}
-
+// Wrapper kept for compatibility: shared bus init (idempotent)
 static esp_err_t bbep_i2c_bus_init(int sda, int scl)
 {
-    if (s_i2c_bus) {
-        // already init; optionally validate pins or recreate
-        return ESP_OK;
-    }
+    return i2c_bus_init(sda, scl);
+}
 
-    i2c_master_bus_config_t bus_cfg = {
-        .i2c_port = I2C_NUM_0,                  // 1) i2c_port
-        .sda_io_num = (gpio_num_t)sda,          // 2) sda_io_num
-        .scl_io_num = (gpio_num_t)scl,          // 3) scl_io_num
-        .clk_source = I2C_CLK_SRC_DEFAULT,
-        .glitch_ignore_cnt = 7,
-        .intr_priority = 0,
-        .trans_queue_depth = 0,
-        .flags = {                              // 8) flags
-            .enable_internal_pullup = 1,
-            .allow_pd = 0,
-        },
-    };
-
-    esp_err_t err = i2c_new_master_bus(&bus_cfg, &s_i2c_bus);
-    if (err != ESP_OK) return err;
-
-    s_dev_count = 0;
-    memset(s_devs, 0, sizeof(s_devs));
-    return ESP_OK;
+// Shared cached dev handle (delegates caching to i2c_bus)
+static inline i2c_master_dev_handle_t bbep_get_dev(uint8_t addr7, uint32_t speed_hz)
+{
+    return i2c_bus_get_dev(addr7, speed_hz);
 }
 
 #endif // !ARDUINO && CONFIG_IDF_TARGET_ESP32C5
@@ -370,7 +318,7 @@ int bbepI2CWrite(unsigned char iAddr, unsigned char *pData, int iLen)
     rc = !Wire.endTransmission();
     return rc;
 #else
-    i2c_master_dev_handle_t dev = bbep_get_or_add_dev((uint8_t)iAddr, 400000);
+    i2c_master_dev_handle_t dev = i2c_bus_get_dev((uint8_t)iAddr, 400000);
     if (!dev) return 0;
 
     esp_err_t err = i2c_master_transmit(dev, pData, iLen, 1000 /*timeout_ms*/);
@@ -393,7 +341,7 @@ int bbepI2CRead(unsigned char iAddr, unsigned char *pData, int iLen)
         }
 #else
         // ESP-IDF (new I2C master driver: driver/i2c_master.h)
-        i2c_master_dev_handle_t dev = bbep_get_or_add_dev((uint8_t)iAddr, 400000);
+        i2c_master_dev_handle_t dev = i2c_bus_get_dev((uint8_t)iAddr, 400000);
         if (!dev) return 0;
 
         esp_err_t err = i2c_master_receive(dev, pData, iLen, 1000 /*timeout_ms*/);
@@ -412,7 +360,7 @@ int bbepI2CReadRegister(unsigned char iAddr, unsigned char u8Register, unsigned 
         return iLen;
     }
 
-    i2c_master_dev_handle_t dev = bbep_get_or_add_dev((uint8_t)iAddr, 400000);
+    i2c_master_dev_handle_t dev = i2c_bus_get_dev((uint8_t)iAddr, 400000);
     if (!dev) return 0;
 
     // best practice in new driver: transmit + receive in one call
