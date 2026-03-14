@@ -5,5 +5,5 @@ idf_component_register(
          "src/bb_ep_gfx.inl"
          "src/g5dec.inl"
     INCLUDE_DIRS "src"
-    REQUIRES driver esp_timer esp_lcd
+    REQUIRES driver esp_timer esp_lcd i2c_bus
 )

@@ -1495,11 +1495,11 @@ int bbepIOInit(FASTEPDSTATE *pState)
     for (int i=0; i<pState->panelDef.bus_width; i++) {
         parlio_tx_config.data_gpio_nums[i] = (gpio_num_t)pState->panelDef.data[i];
     }
-    if (pState->panelDef.bus_width < 16) {
-        for (int i=8; i<16; i++) {
-            parlio_tx_config.data_gpio_nums[i] = (gpio_num_t)-1;
-        }
-    }
+    // if (pState->panelDef.bus_width < 16) {
+    //     for (int i=8; i<16; i++) {
+    //         parlio_tx_config.data_gpio_nums[i] = (gpio_num_t)-1;
+    //     }
+    // }
     parlio_tx_config.clk_out_gpio_num = (gpio_num_t)pState->panelDef.ioCL;
     parlio_tx_config.valid_gpio_num = (gpio_num_t)pState->panelDef.ioSPH; // CS
     parlio_tx_config.valid_start_delay = 1; // N.B. this cannot be 0
