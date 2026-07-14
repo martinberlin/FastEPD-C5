@@ -29,21 +29,6 @@
   #include <string.h>
 #endif
 
-#if !defined(ARDUINO) && CONFIG_IDF_TARGET_ESP32S3
-
-// Wrapper kept for compatibility: shared bus init (idempotent)
-static esp_err_t bbep_i2c_bus_init(int sda, int scl)
-{
-    return i2c_bus_init(sda, scl);
-}
-
-// Shared cached dev handle (delegates caching to i2c_bus)
-static inline i2c_master_dev_handle_t bbep_get_dev(uint8_t addr7, uint32_t speed_hz)
-{
-    return i2c_bus_get_dev(addr7, speed_hz);
-}
-
-#endif // !ARDUINO && CONFIG_IDF_TARGET_ESP32C5
 // Since the Espressif I2C driver seems to corrupt memory with it's frequent allocs and frees, use bit banging
 
 static uint8_t u8SDA_Pin, u8SCL_Pin;
@@ -311,24 +296,10 @@ int bbepI2CInit(uint8_t sda, uint8_t scl, int bb)
         Wire.setTimeout(100);
 #else
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
-    i2c_master_bus_config_t conf;
     if (my_bus_handle) return BBEP_SUCCESS; // already initialized
 
-// Try to get existing bus (initialized elsewhere)
-    if (i2c_master_get_bus_handle(I2C_NUM_0, &my_bus_handle) == ESP_OK) {
-            //printf("got an existing bus handle\n");
-            return BBEP_SUCCESS;
-    }
-    conf.i2c_port = I2C_NUM_0;
-//printf("creating i2c bus with SDA/SCL = %d/%d\n", sda, scl);
-    conf.sda_io_num = (gpio_num_t)sda;
-    conf.scl_io_num = (gpio_num_t)scl;
-    conf.clk_source = I2C_CLK_SRC_DEFAULT;
-    conf.glitch_ignore_cnt = 7;
-    conf.flags.enable_internal_pullup = true;
-    conf.intr_priority = 0;
-    conf.trans_queue_depth = 0; // keep synchronous mode
-    ESP_ERROR_CHECK(i2c_new_master_bus(&conf, &my_bus_handle));
+    ESP_ERROR_CHECK(i2c_bus_init((int)sda, (int)scl));
+    ESP_ERROR_CHECK(i2c_master_get_bus_handle(I2C_NUM_0, &my_bus_handle));
 //printf("i2c bus handle: %d\n", (int)my_bus_handle);
 #else // older esp-idff
     i2c_config_t conf;
