@@ -21,6 +21,33 @@
 #ifndef __BB_EP_IO__
 #define __BB_EP_IO__
 
+<<<<<<< Updated upstream
+=======
+#if !defined(ARDUINO)
+  // NEW: use shared i2c bus
+  #include "i2c_bus.h"
+  #include "driver/i2c_master.h"
+  #include "esp_err.h"
+  #include <string.h>
+#endif
+
+#if !defined(ARDUINO) && CONFIG_IDF_TARGET_ESP32S3
+
+// Wrapper kept for compatibility: shared bus init (idempotent)
+static esp_err_t bbep_i2c_bus_init(int sda, int scl)
+{
+    return i2c_bus_init(sda, scl);
+}
+
+// Shared cached dev handle (delegates caching to i2c_bus)
+static inline i2c_master_dev_handle_t bbep_get_dev(uint8_t addr7, uint32_t speed_hz)
+{
+    return i2c_bus_get_dev(addr7, speed_hz);
+}
+
+#endif // !ARDUINO && CONFIG_IDF_TARGET_ESP32C5
+
+>>>>>>> Stashed changes
 // Since the Espressif I2C driver seems to corrupt memory with it's frequent allocs and frees, use bit banging
 
 static uint8_t u8SDA_Pin, u8SCL_Pin;
